@@ -35,4 +35,3 @@ RPMS
 .DS_Store
 .#*
 *~
-pinhead* # ignore binary
