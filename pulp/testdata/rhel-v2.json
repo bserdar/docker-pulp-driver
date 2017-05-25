@@ -1,0 +1,8 @@
+{
+    "repo-registry-id": "rhel7.3",
+    "repository": "redhat-rhel7.3",
+    "url": "https://access.redhat.com/webassets/docker/content/dist/rhel/server/7/7Server/x86_64/containers/registry/rhel7.3/",
+    "version": 2,
+    "protected": false,
+    "type": "pulp-docker-redirect"
+}

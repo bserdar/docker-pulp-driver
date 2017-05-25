@@ -11,9 +11,9 @@ import (
 
 // Basic repo metadata structure expected to be read from metadata files (v2)
 type repoMd struct {
-	repoId  string `json:"repo-registry-id"`
-	url     string `json:"url"`
-	version int    `json:"version"`
+	RepoId  string `json:"repo-registry-id"`
+	Url     string `json:"url"`
+	Version int    `json:"version"`
 }
 
 // fileData keeps Information about a file and its contents
