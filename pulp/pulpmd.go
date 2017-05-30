@@ -31,8 +31,8 @@ type pulpData struct {
 }
 
 var (
-	dirContents *pulpData
-	dirMu       sync.Mutex
+	pulpMetadata *pulpData
+	dirMu        sync.Mutex
 )
 
 func newPulpData() *pulpData {
@@ -110,11 +110,11 @@ func readFilesInDir(dir string, existing *pulpData, modified func(old, new os.Fi
 }
 
 func updateMd(dir string) {
-	pd, err := readFilesInDir(dir, dirContents, defaultModifiedFunc)
+	pd, err := readFilesInDir(dir, pulpMetadata, defaultModifiedFunc)
 	if err != nil {
 	} else {
 		dirMu.Lock()
-		dirContents = pd
+		pulpMetadata = pd
 		dirMu.Unlock()
 	}
 }

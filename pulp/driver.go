@@ -3,6 +3,7 @@ package pulp
 import (
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -19,10 +20,9 @@ import (
 
 const (
 	driverName                 = "pulp"
-	defaultRootDirectory       = "/var/lib/registry"
 	defaultMaxThreads          = uint64(100)
 	defaultPollingIntervalSecs = uint64(60)
-	registryRoot               = "/docker/registry/v2"
+	registryRoot               = "/docker/registry/v2/"
 
 	// minThreads is the minimum value for the maxthreads configuration
 	// parameter. If the driver's parameters are less than this we set
@@ -33,7 +33,6 @@ const (
 // DriverParameters represents all configuration options available for the
 // filesystem driver
 type DriverParameters struct {
-	RootDirectory       string
 	MaxThreads          uint64
 	PollingIntervalSecs uint64
 	PollingDir          string
@@ -76,14 +75,10 @@ func parseParameters(parameters map[string]interface{}) (*DriverParameters, erro
 	var (
 		maxThreads             = defaultMaxThreads
 		pollingInterval uint64 = 0
-		rootDirectory          = defaultRootDirectory
 		pollingDir             = ""
 	)
 
 	if parameters != nil {
-		if rootDir, ok := parameters["rootdirectory"]; ok {
-			rootDirectory = fmt.Sprint(rootDir)
-		}
 		if watchDir, ok := parameters["pollingdir"]; ok {
 			pollingDir = fmt.Sprint(watchDir)
 		}
@@ -100,9 +95,7 @@ func parseParameters(parameters map[string]interface{}) (*DriverParameters, erro
 		}
 	}
 
-	params := &DriverParameters{
-		RootDirectory:       rootDirectory,
-		MaxThreads:          maxThreads,
+	params := &DriverParameters{MaxThreads: maxThreads,
 		PollingIntervalSecs: pollingInterval,
 		PollingDir:          pollingDir,
 	}
@@ -137,13 +130,11 @@ func getUintValue(valueName string, value interface{}) (uint64, error) {
 // New constructs a new Driver with a given rootDirectory
 func New(params DriverParameters) *Driver {
 	fsParams := fsd.DriverParameters{
-		RootDirectory: params.RootDirectory,
-		MaxThreads:    params.MaxThreads}
+		MaxThreads: params.MaxThreads}
 
 	fsDriver := fsd.New(fsParams)
-	driver := &driver{rootDirectory: params.RootDirectory,
-		pollingDir: params.PollingDir,
-		fsDriver:   fsDriver}
+	driver := &driver{pollingDir: params.PollingDir,
+		fsDriver: fsDriver}
 	startDirWatch(params.PollingDir, params.PollingIntervalSecs)
 
 	return &Driver{
@@ -163,6 +154,11 @@ func (d *driver) Name() string {
 
 // GetContent retrieves the content stored at "path" as a []byte.
 func (d *driver) GetContent(ctx context.Context, path string) ([]byte, error) {
+	redirect, err := getRedirectPath(ctx, path)
+	fmt.Printf("path: %s redirectPath: %s\n", path, redirect)
+	if err != nil {
+		return nil, err
+	}
 	return d.fsDriver.GetContent(ctx, path)
 }
 
@@ -207,11 +203,40 @@ func (d *driver) Delete(ctx context.Context, subPath string) error {
 // URLFor returns a URL which may be used to retrieve the content stored at the given path.
 // May return an UnsupportedMethodErr in certain StorageDriver implementations.
 func (d *driver) URLFor(ctx context.Context, path string, options map[string]interface{}) (string, error) {
+	return getRedirectPath(ctx, path)
+}
+
+func getRedirectPath(ctx context.Context, path string) (string, error) {
+	context.GetLogger(ctx).Debugf("getRedirectPath(%s)", path)
 	if !strings.HasPrefix(path, registryRoot) {
-		return "", storagedriver.ErrUnsupportedMethod{}
+		return "", storagedriver.PathNotFoundError{Path: path, DriverName: driverName}
 	}
-	url := "test"
-	ret := filepath.Join(url, path[len(registryRoot):])
-	fmt.Printf("URLFor:%s return:%s\n", path, ret)
-	return ret, nil
+	segments := strings.Split(path[len(registryRoot):], string(os.PathSeparator))
+	context.GetLogger(ctx).Debug("getRedirectPath segments:%v", segments)
+	if segments[0] == "blob" {
+	} else if segments[0] == "repositories" {
+		// segments[1] to (_manifests,_uploads,_layers) is the name
+		name := ""
+		for i, x := range segments {
+			if x == "_manifests" || x == "_uploads" || x == "_layers" {
+				begin := 0
+				if segments[0] == "library" {
+					begin = 1
+				}
+				name = filepath.Join(segments[begin:i]...)
+				break
+			}
+		}
+		context.GetLogger(ctx).Debugf("getRedirectPath: name:%s", name)
+		if name == "" {
+			return "", storagedriver.PathNotFoundError{Path: path, DriverName: driverName}
+		}
+		fd, ok := pulpMetadata.repos[name]
+		if ok {
+			return fd.Url, nil
+		} else {
+			context.GetLogger(ctx).Warnf("No pulp repo for %s", name)
+		}
+	}
+	return "", storagedriver.PathNotFoundError{Path: path, DriverName: driverName}
 }
