@@ -3,8 +3,10 @@ package pulp
 import (
 	"fmt"
 	"io"
+	"path/filepath"
 	"reflect"
 	"strconv"
+	"strings"
 
 	"github.com/docker/distribution/context"
 	storagedriver "github.com/docker/distribution/registry/storage/driver"
@@ -20,6 +22,7 @@ const (
 	defaultRootDirectory       = "/var/lib/registry"
 	defaultMaxThreads          = uint64(100)
 	defaultPollingIntervalSecs = uint64(60)
+	registryRoot               = "/docker/registry/v2"
 
 	// minThreads is the minimum value for the maxthreads configuration
 	// parameter. If the driver's parameters are less than this we set
@@ -44,7 +47,13 @@ func init() {
 type pulpDriverFactory struct{}
 
 func (factory *pulpDriverFactory) Create(parameters map[string]interface{}) (storagedriver.StorageDriver, error) {
-	return FromParameters(parameters)
+	params, err := parseParameters(parameters)
+	if err != nil {
+		return nil, err
+	}
+	updateMd(params.PollingDir)
+	startDirWatch(params.PollingDir, params.PollingIntervalSecs)
+	return New(*params), nil
 }
 
 type driver struct {
@@ -63,19 +72,7 @@ type Driver struct {
 	baseEmbed
 }
 
-// FromParameters constructs a new Driver with a given parameters map
-// Optional Parameters:
-// - rootdirectory
-// - maxthreads
-func FromParameters(parameters map[string]interface{}) (*Driver, error) {
-	params, err := fromParametersImpl(parameters)
-	if err != nil || params == nil {
-		return nil, err
-	}
-	return New(*params), nil
-}
-
-func fromParametersImpl(parameters map[string]interface{}) (*DriverParameters, error) {
+func parseParameters(parameters map[string]interface{}) (*DriverParameters, error) {
 	var (
 		maxThreads             = defaultMaxThreads
 		pollingInterval uint64 = 0
@@ -210,6 +207,11 @@ func (d *driver) Delete(ctx context.Context, subPath string) error {
 // URLFor returns a URL which may be used to retrieve the content stored at the given path.
 // May return an UnsupportedMethodErr in certain StorageDriver implementations.
 func (d *driver) URLFor(ctx context.Context, path string, options map[string]interface{}) (string, error) {
-	//	return "", storagedriver.ErrUnsupportedMethod{}
-	return "http://somewhere", nil
+	if !strings.HasPrefix(path, registryRoot) {
+		return "", storagedriver.ErrUnsupportedMethod{}
+	}
+	url := "test"
+	ret := filepath.Join(url, path[len(registryRoot):])
+	fmt.Printf("URLFor:%s return:%s\n", path, ret)
+	return ret, nil
 }
