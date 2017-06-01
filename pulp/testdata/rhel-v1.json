@@ -1,0 +1,30 @@
+{
+    "type":"pulp-docker-redirect",
+    "version":1,
+    "repository":"redhat-rhel7.3",
+    "repo-registry-id": "rhel7.3",
+    "url":"https://access.redhat.com/webassets/docker/content/dist/rhel/server/7/7Server/x86_64/containers/registry/rhel7.3/",
+    "protected":false,
+    "images":[
+        {"id": "b0fd6df3b4eebbf780b6758697a83d3518a0139da0c4b5559b646834ff0212a2"},
+        {"id": "04a8250cb5ec6210a27ed3eff6c718c2f5d942d29d1aeb2361a183a0dc5d9459"},
+        {"id": "1fa615f1decb477e4c918d233beb3057cc7cf99aa1c22518c95af8df160fb10e"},
+        {"id": "7c155bf348e92cfcc9e317de3d6b49a6961e6436cc4ed47a0effce93ee8f1fd3"},
+        {"id": "a402c8f8e5053e34a7312c6ef41b75e5010ed52f35ed1b065795ae6b8ef5e695"},
+        {"id": "f9c620cb06be5ba39d7a5ad65a41da2bd616ee19fe5ce9513364291d9ec9da44"},
+        {"id": "694fcd203846d083954eb94a088a4df0f3f14d9c3af07ac2f30bdb337b152d31"},
+        {"id": "f292303bc617e9657956fe7ac5495b644c369103d1b98733148cef9dc68cb525"},
+        {"id": "0ea64db264e92865e0f7d623c243bd4992111387e961424ddd31ce1062f26b2b"},
+        {"id": "f6f6121b053b2312688c87d3a1d32d06a984dc01d2ea7738508a50581cddb6b4"},
+        {"id": "ca99626b23fc75fbce863870d8efb6fe8cfdd77c125a9552943dfd7843bd4aa5"},
+        {"id": "3d13b3f1f8a15c2db4010250df461f9c21134dc6e0712664f59c83d795fe8b97"}],
+    "tags":{
+        "7.3-74": "f9c620cb06be5ba39d7a5ad65a41da2bd616ee19fe5ce9513364291d9ec9da44",
+        "7.3-66": "b0fd6df3b4eebbf780b6758697a83d3518a0139da0c4b5559b646834ff0212a2",
+        "7.3-79": "0ea64db264e92865e0f7d623c243bd4992111387e961424ddd31ce1062f26b2b",
+        "7.3-82": "04a8250cb5ec6210a27ed3eff6c718c2f5d942d29d1aeb2361a183a0dc5d9459",
+        "7.3": "04a8250cb5ec6210a27ed3eff6c718c2f5d942d29d1aeb2361a183a0dc5d9459",
+        "7.3-53": "ca99626b23fc75fbce863870d8efb6fe8cfdd77c125a9552943dfd7843bd4aa5",
+        "7.3-45": "694fcd203846d083954eb94a088a4df0f3f14d9c3af07ac2f30bdb337b152d31",
+        "latest": "04a8250cb5ec6210a27ed3eff6c718c2f5d942d29d1aeb2361a183a0dc5d9459"}
+}

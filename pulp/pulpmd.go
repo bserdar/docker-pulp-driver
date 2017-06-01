@@ -3,11 +3,14 @@ package pulp
 
 import (
 	"encoding/json"
+	"fmt"
 	"io/ioutil"
 	"os"
 	"path"
 	"sync"
 	"time"
+
+	digest "github.com/opencontainers/go-digest"
 )
 
 // Basic repo metadata structure expected to be read from metadata files (v2)
@@ -18,15 +21,26 @@ type repoMd struct {
 	Protected bool   `json:"protected"`
 }
 
+type tagInfo struct {
+	tag     string
+	hash    string
+	size    int64
+	modTime time.Time
+}
+
 // fileData keeps Information about a file and its contents
 type fileData struct {
 	repoMd
 	fileInfo os.FileInfo
+	// Map of tag manifest hash to tag names
+	tagHashMap map[string]tagInfo
 }
 
 // pulpData maps file names to file data and repo ids to file data
 type pulpData struct {
+	// Map of file names to filedata
 	files map[string]*fileData
+	// Map of repo names to filedata
 	repos map[string]*fileData
 }
 
@@ -38,6 +52,59 @@ var (
 func newPulpData() *pulpData {
 	return &pulpData{files: make(map[string]*fileData),
 		repos: make(map[string]*fileData)}
+}
+
+func (f *fileData) getTagInfoByHash(hash string) (tagInfo, bool) {
+	ti, ok := f.tagHashMap[hash]
+	if ok {
+		return ti, true
+	} else {
+		return tagInfo{}, false
+	}
+}
+
+func (f *fileData) getTagByHash(hash string) (string, bool) {
+	s, ok := f.getTagInfoByHash(hash)
+	if ok {
+		return s.tag, ok
+	}
+	return "", false
+}
+
+func (f *fileData) getTagInfoByTag(tag string) (tagInfo, bool) {
+	for _, ti := range f.tagHashMap {
+		if ti.tag == tag {
+			return ti, true
+		}
+	}
+	return tagInfo{}, false
+}
+
+func (f *fileData) getHashByTag(tag string) (string, bool) {
+	for h, t := range f.tagHashMap {
+		if tag == t.tag {
+			return h, true
+		}
+	}
+	return "", false
+}
+
+func findFileDataByManifestHash(hash string) *fileData {
+	for _, fd := range pulpMetadata.repos {
+		if _, ok := fd.getTagInfoByHash(hash); ok {
+			return fd
+		}
+	}
+	return nil
+}
+
+func (f *fileData) addTag(tag string, manifest []byte, modTime time.Time) string {
+	ti := tagInfo{tag: tag}
+	ti.hash = digest.FromBytes(manifest).String()
+	ti.size = int64(len(manifest))
+	ti.modTime = modTime
+	f.tagHashMap[ti.hash] = ti
+	return ti.hash
 }
 
 func (pd *pulpData) add(fd *fileData) {
@@ -62,6 +129,7 @@ func readFileData(dir string, f os.FileInfo) *fileData {
 	fd := fileData{fileInfo: f}
 	readJsonFile(path.Join(dir, f.Name()), &fd.repoMd)
 	if fd.Version == 2 {
+		fd.tagHashMap = make(map[string]tagInfo)
 		return &fd
 	}
 	return nil
@@ -110,8 +178,10 @@ func readFilesInDir(dir string, existing *pulpData, modified func(old, new os.Fi
 }
 
 func updateMd(dir string) {
+	fmt.Printf("UpdateMd %s\n", dir)
 	pd, err := readFilesInDir(dir, pulpMetadata, defaultModifiedFunc)
 	if err != nil {
+		fmt.Printf("Error:%s\n", err.Error())
 	} else {
 		dirMu.Lock()
 		pulpMetadata = pd
