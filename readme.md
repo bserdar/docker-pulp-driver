@@ -1,4 +1,4 @@
-* What is this?
+# What is this?
 
 This is a replacement for Crane (https://github.com/pulp/crane)
 
@@ -14,7 +14,7 @@ uses. Actual manifest and images are read from the CDN. Because of the
 way registry internals work, the driver read the manifests dir  ectly
 from CDN, but sends redirects for layer requests.       
 
-* How to add this into Docker registry?
+# How to add this into Docker registry?
 
 Docker registry does not support dynamic module loading as of this
 writing (there is a PR for that). So, we have to build a custom Docker
