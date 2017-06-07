@@ -21,10 +21,15 @@ type repoMd struct {
 	Protected bool   `json:"protected"`
 }
 
+// tagInfo keeps the file information for the tag manifest
 type tagInfo struct {
-	tag     string
-	hash    string
-	size    int64
+	// tag denotes the image tag
+	tag string
+	// hash is the layer digest
+	hash string
+	// size is the layer size
+	size int64
+	// modTime is the layer modification time
 	modTime time.Time
 }
 
@@ -34,6 +39,8 @@ type fileData struct {
 	fileInfo os.FileInfo
 	// Map of tag manifest hash to tag names
 	tagHashMap map[string]tagInfo
+	// Lock this to modify tagHashMap
+	mu sync.Mutex
 }
 
 // pulpData maps file names to file data and repo ids to file data
@@ -55,7 +62,9 @@ func newPulpData() *pulpData {
 }
 
 func (f *fileData) getTagInfoByHash(hash string) (tagInfo, bool) {
+	f.mu.Lock()
 	ti, ok := f.tagHashMap[hash]
+	f.mu.Unlock()
 	if ok {
 		return ti, true
 	} else {
@@ -64,7 +73,9 @@ func (f *fileData) getTagInfoByHash(hash string) (tagInfo, bool) {
 }
 
 func (f *fileData) getTagByHash(hash string) (string, bool) {
+	f.mu.Lock()
 	s, ok := f.getTagInfoByHash(hash)
+	f.mu.Unlock()
 	if ok {
 		return s.tag, ok
 	}
@@ -72,6 +83,8 @@ func (f *fileData) getTagByHash(hash string) (string, bool) {
 }
 
 func (f *fileData) getTagInfoByTag(tag string) (tagInfo, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	for _, ti := range f.tagHashMap {
 		if ti.tag == tag {
 			return ti, true
@@ -81,6 +94,8 @@ func (f *fileData) getTagInfoByTag(tag string) (tagInfo, bool) {
 }
 
 func (f *fileData) getHashByTag(tag string) (string, bool) {
+	f.mu.Lock()
+	defer d.mu.Unlock()
 	for h, t := range f.tagHashMap {
 		if tag == t.tag {
 			return h, true
