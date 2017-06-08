@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"os"
 	"path"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,111 +22,20 @@ type repoMd struct {
 	Protected bool   `json:"protected"`
 }
 
-// tagInfo keeps the file information for the tag manifest
-type tagInfo struct {
-	// tag denotes the image tag
-	tag string
-	// hash is the layer digest
-	hash string
-	// size is the layer size
-	size int64
-	// modTime is the layer modification time
-	modTime time.Time
-}
-
-// fileData keeps Information about a file and its contents
-type fileData struct {
-	repoMd
-	fileInfo os.FileInfo
-	// Map of tag manifest hash to tag names
-	tagHashMap map[string]tagInfo
-	// Lock this to modify tagHashMap
-	mu sync.Mutex
-}
-
-// pulpData maps file names to file data and repo ids to file data
-type pulpData struct {
-	// Map of file names to filedata
-	files map[string]*fileData
-	// Map of repo names to filedata
-	repos map[string]*fileData
+type pulpMetadata struct {
+	fs memFS
+	// File name -> fileInfo map. This is used to detect changes
+	files map[string]os.FileInfo
+	// Repo name -> repoMd map.
+	repos map[string]repoMd
+	mu    sync.Mutex
 }
 
 var (
-	pulpMetadata *pulpData
-	dirMu        sync.Mutex
+	pulpMd   *pulpMetadata
+	updating bool
+	updateMu sync.Mutex
 )
-
-func newPulpData() *pulpData {
-	return &pulpData{files: make(map[string]*fileData),
-		repos: make(map[string]*fileData)}
-}
-
-func (f *fileData) getTagInfoByHash(hash string) (tagInfo, bool) {
-	f.mu.Lock()
-	ti, ok := f.tagHashMap[hash]
-	f.mu.Unlock()
-	if ok {
-		return ti, true
-	} else {
-		return tagInfo{}, false
-	}
-}
-
-func (f *fileData) getTagByHash(hash string) (string, bool) {
-	f.mu.Lock()
-	s, ok := f.getTagInfoByHash(hash)
-	f.mu.Unlock()
-	if ok {
-		return s.tag, ok
-	}
-	return "", false
-}
-
-func (f *fileData) getTagInfoByTag(tag string) (tagInfo, bool) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	for _, ti := range f.tagHashMap {
-		if ti.tag == tag {
-			return ti, true
-		}
-	}
-	return tagInfo{}, false
-}
-
-func (f *fileData) getHashByTag(tag string) (string, bool) {
-	f.mu.Lock()
-	defer d.mu.Unlock()
-	for h, t := range f.tagHashMap {
-		if tag == t.tag {
-			return h, true
-		}
-	}
-	return "", false
-}
-
-func findFileDataByManifestHash(hash string) *fileData {
-	for _, fd := range pulpMetadata.repos {
-		if _, ok := fd.getTagInfoByHash(hash); ok {
-			return fd
-		}
-	}
-	return nil
-}
-
-func (f *fileData) addTag(tag string, manifest []byte, modTime time.Time) string {
-	ti := tagInfo{tag: tag}
-	ti.hash = digest.FromBytes(manifest).String()
-	ti.size = int64(len(manifest))
-	ti.modTime = modTime
-	f.tagHashMap[ti.hash] = ti
-	return ti.hash
-}
-
-func (pd *pulpData) add(fd *fileData) {
-	pd.files[fd.fileInfo.Name()] = fd
-	pd.repos[fd.RepoId] = fd
-}
 
 // readJsonFile reads the  contents of a JSON file and returns a repoMd instance
 func readJsonFile(file string, result *repoMd) (*repoMd, error) {
@@ -140,67 +50,203 @@ func readJsonFile(file string, result *repoMd) (*repoMd, error) {
 	return result, nil
 }
 
-func readFileData(dir string, f os.FileInfo) *fileData {
-	fd := fileData{fileInfo: f}
-	readJsonFile(path.Join(dir, f.Name()), &fd.repoMd)
-	if fd.Version == 2 {
-		fd.tagHashMap = make(map[string]tagInfo)
-		return &fd
-	}
-	return nil
-}
-
-func defaultModifiedFunc(old, new os.FileInfo) bool {
-	return !old.ModTime().Equal(new.ModTime())
-}
-
-// Reads all modified files in the directory and returns pulpdata
-// The modified function returns true if the file is modified
-func readFilesInDir(dir string, existing *pulpData, modified func(old, new os.FileInfo) bool) (*pulpData, error) {
+func (md *pulpMetadata) scanDir(dir string) (bool, error) {
 	finfo, err := ioutil.ReadDir(dir)
 	if err != nil {
-		return nil, err
+		return false, err
 	}
 
-	pd := newPulpData()
+	var wg sync.WaitGroup
+
+	changed := false
+	// For all files in dir, check if they've been modified
 	for _, f := range finfo {
-		readFile := false
-		if existing != nil {
-			if ex, ok := existing.files[f.Name()]; ok {
-				if modified(f, ex.fileInfo) {
-					// File modified
-					readFile = true
-				} else {
-					// file Unmodified
-					pd.add(ex)
-				}
-			} else {
-				// New file
-				readFile = true
+		info, ok := md.files[f.Name()]
+		fileModified := false
+		if ok {
+			if !info.ModTime().Equal(f.ModTime()) {
+				fileModified = true
 			}
 		} else {
-			// New file
-			readFile = true
+			fileModified = true
 		}
-		if readFile {
-			fd := readFileData(dir, f)
-			if fd != nil {
-				pd.add(fd)
+		rootDir := md.fs.Mkdir(registryRoot + "repositories")
+		if fileModified {
+			changed = true
+			md.files[f.Name()] = f
+			var rmd repoMd
+			_, err := readJsonFile(path.Join(dir, f.Name()), &rmd)
+			if err == nil {
+				if rmd.Version == 2 {
+					fmt.Printf("Loading %s\n", f.Name())
+					parts := strings.Split(rmd.RepoId, "/")
+					if parts[0] == "library" {
+						parts = parts[1:]
+						rmd.RepoId = strings.Join(parts, "/")
+					}
+					md.repos[rmd.RepoId] = rmd
+					// Remove the repo first
+					rootDir.Delete(parts[0])
+
+					// Get image data
+
+					// Get tags
+					tags, _, err := httpGetContent(joinUrl(rmd.Url, "tags", "list"))
+					if err == nil {
+						var tagData map[string]interface{}
+						if json.Unmarshal(tags, &tagData) == nil {
+							itags, ok := tagData["tags"]
+							if ok {
+								for _, tag := range itags.([]interface{}) {
+									stag := tag.(string)
+									fmt.Printf("%s:%s\n", rmd.RepoId, tag)
+									wg.Add(1)
+									go func() {
+										defer wg.Done()
+										md.processManifest(rmd.RepoId, rmd.Url, stag)
+									}()
+								}
+							}
+						}
+					}
+				}
 			}
 		}
 	}
-	return pd, nil
+	wg.Wait()
+
+	// Remove repos that no longer exist
+	return changed, nil
+}
+
+func (md *pulpMetadata) processManifest(repoId, url, tag string) {
+	// Get the manifest
+	fmt.Printf("retrieving %s\n", joinUrl(url, "manifests", tag))
+	manifest, _, err := httpGetContent(joinUrl(url, "manifests", tag))
+	if err == nil {
+		var manifestData map[string]interface{}
+		json.Unmarshal(manifest, &manifestData)
+		manifestDigest := digest.FromBytes(manifest)
+		// push the image
+		fsLayers := manifestData["fsLayers"].([]interface{})
+		layers := make([]digest.Digest, 0)
+		for _, layer := range fsLayers {
+			ilayer := layer.(map[string]interface{})
+			d, _ := digest.Parse(ilayer["blobSum"].(string))
+			layers = append(layers, d)
+		}
+
+		md.pushImage(repoId, tag, url, manifestDigest, layers)
+	} else {
+		fmt.Printf("Cannot retrieve %s\n", joinUrl(url, "manifests", tag))
+	}
+}
+
+func (md *pulpMetadata) pushImage(name, tag, url string, manifestDigest digest.Digest, layerDigests []digest.Digest) {
+	fmt.Printf("pushImage %s %s %s\n", name, tag, url)
+	imageDir := md.fs.Mkdir(registryRoot + "repositories/" + name)
+	layers := imageDir.Mkdir("_layers")
+	manifests := imageDir.Mkdir("_manifests")
+
+	// push layers
+	for _, layer := range layerDigests {
+		datadir := layers.Mkdir(string(layer.Algorithm())).Mkdir(layer.Hex())
+		datadir.Create("link", []byte(layer.String()), "")
+	}
+
+	// push manifests
+	revisions := manifests.Mkdir("revisions")
+	dataDir := revisions.Mkdir(string(manifestDigest.Algorithm())).Mkdir(manifestDigest.Hex())
+	dataDir.Create("link", []byte(manifestDigest.String()), "")
+
+	tags := manifests.Mkdir("tags")
+	tagDir := tags.Mkdir(tag)
+	current := tagDir.Mkdir("current")
+	current.Create("link", []byte(manifestDigest.String()), "")
+
+	index := tagDir.Mkdir("index")
+	datadir := index.Mkdir(string(manifestDigest.Algorithm())).Mkdir(manifestDigest.Hex())
+	datadir.Create("link", []byte(manifestDigest.String()), "")
+
+	// push blobs
+	blobDir := md.fs.Mkdir(registryRoot + "blobs")
+	pushBlob(blobDir, manifestDigest, joinUrl(url, "manifests", tag), false)
+	for _, l := range layerDigests {
+		pushBlob(blobDir, l, joinUrl(url, "blobs", l.String()), true)
+	}
+}
+
+func pushBlob(dir *mdirectory, d digest.Digest, url string, layer bool) {
+	alg := dir.Mkdir(d.Algorithm().String())
+	twodigs := alg.Mkdir(d.Hex()[0:2])
+	datadir := twodigs.Mkdir(d.Hex())
+	datadir.Create("data", nil, url)
+}
+
+func (md *pulpMetadata) isManifestRequest(blobPath string) (manifestReq bool, name string, tag string) {
+	// Find blobs in the path
+	parts := strings.Split(blobPath, "/")
+	for i, part := range parts {
+		if part == "blobs" {
+			// now we have algorithm, 2 digits, and digest
+			if i+4 <= len(parts) {
+				digest := digest.NewDigestFromHex(parts[i+1], parts[i+3])
+				return md.isManifestDigest(digest)
+			}
+		}
+	}
+	return false, "", ""
+}
+
+func (md *pulpMetadata) isManifestDigest(d digest.Digest) (manifestReq bool, name string, tag string) {
+	r := md.fs.Find("/docker/registry/v2/repositories")
+	if r != nil {
+		root := r.(*mdirectory)
+		var foundDir *mdirectory
+		if !root.Walk(func(dir *mdirectory) bool {
+			if dir.parent.parent.name == "index" &&
+				dir.parent.parent.parent.parent.name == "tags" &&
+				dir.parent.name == d.Algorithm().String() &&
+				dir.name == d.Hex() {
+				foundDir = dir
+				return false
+			}
+			return true
+		}) {
+			tagDir := foundDir.parent.parent.parent
+			tag = tagDir.name
+			manifestDir := tagDir.parent.parent
+			name = ""
+			for x := manifestDir.parent; x.name != "repositories"; x = x.parent {
+				if len(name) == 0 {
+					name = x.name
+				} else {
+					name = x.name + "/" + name
+				}
+			}
+			return true, name, tag
+		}
+	}
+	return false, "", ""
 }
 
 func updateMd(dir string) {
-	fmt.Printf("UpdateMd %s\n", dir)
-	pd, err := readFilesInDir(dir, pulpMetadata, defaultModifiedFunc)
-	if err != nil {
-		fmt.Printf("Error:%s\n", err.Error())
-	} else {
-		dirMu.Lock()
-		pulpMetadata = pd
-		dirMu.Unlock()
+	if !updating {
+		updateMu.Lock()
+		updating = true
+		fmt.Printf("UpdateMd %s\n", dir)
+		if pulpMd == nil {
+			pulpMd = &pulpMetadata{}
+			pulpMd.files = make(map[string]os.FileInfo)
+			pulpMd.repos = make(map[string]repoMd)
+			pulpMd.fs = newFS()
+		}
+		changed, _ := pulpMd.scanDir(dir)
+		if changed {
+			fmt.Printf("%s\n", pulpMd.fs.PrintFiles())
+		}
+		updating = false
+		updateMu.Unlock()
 	}
 }
 

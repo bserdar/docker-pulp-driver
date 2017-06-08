@@ -6,7 +6,7 @@ import (
 	"io"
 	"io/ioutil"
 	"net/http"
-	"os"
+	"path"
 	"reflect"
 	"strconv"
 	"strings"
@@ -149,28 +149,34 @@ func (d *driver) Name() string {
 	return driverName
 }
 
+type StrReaderCloser struct {
+	reader *strings.Reader
+}
+
+func (s StrReaderCloser) Close() error               { return nil }
+func (s StrReaderCloser) Read(b []byte) (int, error) { return s.reader.Read(b) }
+
+func NewReaderCloser(s string) StrReaderCloser {
+	var r StrReaderCloser
+	r.reader = strings.NewReader(s)
+	return r
+}
+
 // GetContent retrieves the content stored at "path" as a []byte.
 func (d *driver) GetContent(ctx context.Context, path string) ([]byte, error) {
 	context.GetLogger(ctx).Debugf("getContent: path:%s", path)
-
-	rr, err := getRequestType(ctx, path)
+	rc, err := d.Reader(ctx, path, 0)
 	if err != nil {
 		return nil, err
 	}
-	if rr != nil {
-		switch t := rr.(type) {
-		case manifestIndexRequest:
-			context.GetLogger(ctx).Debugf("getContent: path:%s manifestIndex", path)
-			return t.getManifestIndex()
-		case manifestRequest:
-			context.GetLogger(ctx).Debugf("getContent: path:%s manifest", path)
-			return t.getManifest()
-		case layerLinkRequest:
-			context.GetLogger(ctx).Debugf("getContent: path:%s layer link", path)
-			return t.getLink()
-		}
+	defer rc.Close()
+
+	p, err := ioutil.ReadAll(rc)
+	if err != nil {
+		return nil, err
 	}
-	return nil, storagedriver.PathNotFoundError{Path: path}
+
+	return p, nil
 }
 
 // PutContent stores the []byte content at a location designated by "path".
@@ -181,7 +187,26 @@ func (d *driver) PutContent(ctx context.Context, subPath string, contents []byte
 // Reader retrieves an io.ReadCloser for the content stored at "path" with a
 // given byte offset.
 func (d *driver) Reader(ctx context.Context, path string, offset int64) (io.ReadCloser, error) {
-	return nil, storagedriver.ErrUnsupportedMethod{}
+	context.GetLogger(ctx).Debugf("reader: path:%s", path)
+
+	x := pulpMd.fs.Find(path)
+	if x != nil && !x.isDir() {
+		file := x.(*mfile)
+		if file.isRedirect {
+			if file.isLayer {
+				panic("Cannot read layer")
+			} else {
+				data, _, err := httpGetContent(file.redirectUrl)
+				if err != nil {
+					return nil, err
+				}
+				return NewReaderCloser(string(data)), nil
+			}
+		} else {
+			return NewReaderCloser(string(file.contents)), nil
+		}
+	}
+	return nil, storagedriver.PathNotFoundError{Path: path}
 }
 
 func (d *driver) Writer(ctx context.Context, subPath string, append bool) (storagedriver.FileWriter, error) {
@@ -193,43 +218,22 @@ func (d *driver) Writer(ctx context.Context, subPath string, append bool) (stora
 func (d *driver) Stat(ctx context.Context, subPath string) (storagedriver.FileInfo, error) {
 	context.GetLogger(ctx).Debugf("stat: path:%s", subPath)
 
-	rr, err := getRequestType(ctx, subPath)
-	if err != nil {
-		return nil, err
-	}
-	ret := storagedriver.FileInfoInternal{}
-	ret.FileInfoFields.Path = subPath
-	ret.FileInfoFields.IsDir = false
-	switch t := rr.(type) {
-	case layerLinkRequest:
-		ret.FileInfoFields.Size = 71
-		ret.FileInfoFields.ModTime = time.Time{}
-		context.GetLogger(ctx).Debugf("stat: path:%s layerLink", subPath)
-		return ret, nil
-	case manifestIndexRequest:
-		ret.FileInfoFields.Size = 71
-		ret.FileInfoFields.ModTime = time.Time{}
-		context.GetLogger(ctx).Debugf("stat: path:%s manifestIndex", subPath)
-		return ret, nil
-	case manifestRequest:
-		fd, ok := pulpMetadata.repos[t.GetName()]
-		if ok {
-			context.GetLogger(ctx).Debugf("stat: path:%s name: %s ref: %s", subPath, fd.repoMd.RepoId,
-				t.hash)
-			tagInfo, ok := fd.getTagInfoByHash(t.hash)
-			if ok {
-				ret.FileInfoFields.Size = tagInfo.size
-				ret.FileInfoFields.ModTime = tagInfo.modTime
-				context.GetLogger(ctx).Debugf("stat: path:%s manifest", subPath)
-				return ret, nil
+	x := pulpMd.fs.Find(subPath)
+	if x != nil {
+		if !x.isDir() {
+			file := x.(*mfile)
+			if file.isRedirect {
+				return getBlobHeader(ctx, subPath, file.redirectUrl)
 			}
 		}
-	case layerRequest:
-		fd, ok := pulpMetadata.repos[t.GetName()]
-		if ok {
-			context.GetLogger(ctx).Debugf("stat: path:%s layer", subPath)
-			return getBlobHeader(fd.Url, t.digest)
+		ret := storagedriver.FileInfoInternal{}
+		ret.FileInfoFields.Path = subPath
+		ret.FileInfoFields.IsDir = x.isDir()
+		if !x.isDir() {
+			ret.FileInfoFields.Size = x.(*mfile).size
 		}
+		ret.FileInfoFields.ModTime = x.getModTime()
+		return ret, nil
 	}
 	return nil, storagedriver.PathNotFoundError{Path: subPath}
 }
@@ -237,7 +241,18 @@ func (d *driver) Stat(ctx context.Context, subPath string) (storagedriver.FileIn
 // List returns a list of the objects that are direct descendants of the given
 // path.
 func (d *driver) List(ctx context.Context, subPath string) ([]string, error) {
-	return nil, storagedriver.ErrUnsupportedMethod{}
+	fullPath := subPath
+	context.GetLogger(ctx).Debugf("list: path: %s, fullPath: %s\n", subPath, fullPath)
+	x := pulpMd.fs.Find(fullPath)
+
+	if x != nil && x.isDir() {
+		ret := make([]string, 0)
+		for _, node := range x.(*mdirectory).nodes {
+			ret = append(ret, path.Join(subPath, node.getName()))
+		}
+		return ret, nil
+	}
+	return nil, storagedriver.PathNotFoundError{Path: subPath}
 }
 
 // Move moves an object stored at sourcePath to destPath, removing the original
@@ -255,37 +270,16 @@ func (d *driver) Delete(ctx context.Context, subPath string) error {
 // May return an UnsupportedMethodErr in certain StorageDriver implementations.
 func (d *driver) URLFor(ctx context.Context, path string, options map[string]interface{}) (string, error) {
 	context.GetLogger(ctx).Debugf("URLFor :%s", path)
-	rr, err := getRequestType(ctx, path)
-	context.GetLogger(ctx).Debugf("URLFor :%s rq: %v", path, rr)
-
-	if err != nil {
-		return "", err
-	}
-
-	if rr == nil {
-		return "", storagedriver.PathNotFoundError{Path: path}
-	}
-
-	fd, ok := pulpMetadata.repos[rr.GetName()]
-	if !ok {
-		return "", storagedriver.PathNotFoundError{Path: path}
-	}
-	switch t := rr.(type) {
-	case layerRequest:
-		context.GetLogger(ctx).Debugf("URLFor :%s layerRequest", path)
-		return joinUrl(fd.Url, "blobs", t.digest), nil
-	case manifestRequest:
-		ti, ok := fd.getTagInfoByHash(t.hash)
-		if ok {
-			context.GetLogger(ctx).Debugf("URLFor :%s manifestRequest", path)
-			return joinUrl(fd.Url, "manifests", ti.tag), nil
+	x := pulpMd.fs.Find(path)
+	if x != nil {
+		if !x.isDir() {
+			file := x.(*mfile)
+			if file.isRedirect {
+				return file.redirectUrl, nil
+			}
 		}
 	}
 	return "", storagedriver.PathNotFoundError{Path: path}
-}
-
-func getImageManifest(url, tag string) ([]byte, *http.Response, error) {
-	return httpGetContent(joinUrl(url, "manifests", tag))
 }
 
 func getModTime(resp *http.Response) time.Time {
@@ -299,15 +293,15 @@ func getModTime(resp *http.Response) time.Time {
 	return time.Time{}
 }
 
-func getBlobHeader(url, digest string) (storagedriver.FileInfo, error) {
-	resp, err := httpReq(joinUrl(url, "blobs", digest), "HEAD", 0)
+func getBlobHeader(ctx context.Context, path, url string) (storagedriver.FileInfo, error) {
+	resp, err := httpReq(url, "HEAD", 0)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	fi := storagedriver.FileInfoInternal{}
-	fi.FileInfoFields.Path = joinUrl(url, "blobs", digest)
+	fi.FileInfoFields.Path = path
 	fi.FileInfoFields.ModTime = getModTime(resp)
 	length := resp.Header.Get("content-length")
 	if len(length) > 0 {
@@ -317,164 +311,6 @@ func getBlobHeader(url, digest string) (storagedriver.FileInfo, error) {
 		}
 	}
 	return fi, nil
-}
-
-func getImageTags(url string) ([]string, error) {
-	return nil, nil
-}
-
-// Base interface for all registry requests
-type registryRequest interface {
-	GetName() string
-}
-
-// manifestRequest is the request to retrieve the manifest for the given name and reference
-type manifestRequest struct {
-	name string
-	hash string
-}
-
-func (r manifestRequest) GetName() string { return r.name }
-
-func (r manifestRequest) getManifest() ([]byte, error) {
-	fd := pulpMetadata.repos[r.name]
-	if fd != nil {
-		ti, ok := fd.getTagInfoByHash(r.hash)
-		if ok {
-			data, _, err := getImageManifest(fd.Url, ti.tag)
-			if err != nil {
-				return nil, err
-			}
-			return data, nil
-		}
-	}
-	return nil, storagedriver.PathNotFoundError{Path: r.name}
-}
-
-type layerLinkRequest struct {
-	name string
-	hash string
-}
-
-func (r layerLinkRequest) GetName() string { return r.name }
-
-func (r layerLinkRequest) getLink() ([]byte, error) {
-	return []byte(r.hash), nil
-}
-
-// manifestIndexRequest is the request to retrieve a pointer to the manifest
-type manifestIndexRequest struct {
-	name      string
-	reference string
-}
-
-func (r manifestIndexRequest) GetName() string { return r.name }
-
-func (r manifestIndexRequest) getManifestIndex() ([]byte, error) {
-	fd := pulpMetadata.repos[r.name]
-	if fd != nil {
-		hash, ok := fd.getHashByTag(r.reference)
-		if !ok {
-			// Read manifest, compute hash
-			data, resp, err := getImageManifest(fd.Url, r.reference)
-			if err != nil {
-				return nil, err
-			}
-			hash = fd.addTag(r.reference, data, getModTime(resp))
-		}
-		return []byte(hash), nil
-	}
-	return nil, storagedriver.PathNotFoundError{Path: r.name}
-}
-
-// layerRequest is the request to request a layer download/upload
-type layerRequest struct {
-	name   string
-	upload bool
-	digest string
-}
-
-func (r layerRequest) GetName() string { return r.name }
-
-func makeName(segments []string) string {
-	begin := 0
-	if segments[0] == "library" {
-		begin = 1
-	}
-	return joinUrl(segments[begin:]...)
-}
-
-func getRequestType(ctx context.Context, path string) (registryRequest, error) {
-	var name, reference string
-
-	x := ctx.Value("vars.name")
-	if x != nil {
-		name = x.(string)
-		name = strings.TrimPrefix(name, "library/")
-	}
-	x = ctx.Value("vars.reference")
-	if x != nil {
-		reference = x.(string)
-	}
-
-	fd, ok := pulpMetadata.repos[name]
-	if !ok {
-		return nil, storagedriver.PathNotFoundError{Path: path}
-	}
-
-	if strings.HasPrefix(path, registryRoot) {
-		segments := strings.Split(path[len(registryRoot):], string(os.PathSeparator))
-		context.GetLogger(ctx).Debugf("getRequestType : %s:%s %v", name, reference, segments)
-		if segments[0] == "blobs" {
-			// Are we loading manifest, or a layer?
-			digest := segments[1] + ":" + segments[3]
-			fd := findFileDataByManifestHash(digest)
-			if fd != nil {
-				// Loading manifest
-				r := manifestRequest{name: fd.RepoId, hash: digest}
-				context.GetLogger(ctx).Debugf("getRequestType manifestRequest :%v", r)
-				return r, nil
-			} else {
-				// Loading layer
-				r := layerRequest{name: name, digest: digest}
-				context.GetLogger(ctx).Debugf("getRequestType layerRequest :%v", r)
-				return r, nil
-			}
-		} else if segments[0] == "repositories" {
-			segments = segments[1:]
-			// segments[0] to (_manifests,_uploads,_layers) is the name
-			for i, x := range segments {
-				if x == "_manifests" || x == "_uploads" || x == "_layers" {
-					segments = segments[i:]
-					break
-				}
-			}
-			n := len(segments)
-			if segments[0] == "_manifests" {
-				if segments[1] == "tags" {
-					if n > 1 {
-						tag := segments[2]
-						if n > 2 {
-							if segments[3] == "current" && segments[4] == "link" {
-								return manifestIndexRequest{name: name, reference: tag}, nil
-							} else if segments[3] == "index" {
-								return manifestIndexRequest{name: name, reference: tag}, nil
-							}
-						}
-					}
-				} else if segments[1] == "revisions" {
-					hash := segments[2] + ":" + segments[3]
-					tag, ok := fd.getTagByHash(hash)
-					if ok {
-						return manifestIndexRequest{name: name, reference: tag}, nil
-					}
-				}
-			} else if segments[0] == "_layers" {
-				return layerLinkRequest{name: name, hash: segments[1] + ":" + segments[2]}, nil
-			}
-		}
-	}
-	return nil, nil
 }
 
 func joinUrl(parts ...string) string {
