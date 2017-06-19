@@ -22,10 +22,16 @@ type repoMd struct {
 	Protected bool   `json:"protected"`
 }
 
+// Contains the file information, and the repoid described in this file
+type fileMapping struct {
+	info   os.FileInfo
+	repoId string
+}
+
 type pulpMetadata struct {
 	fs memFS
-	// File name -> fileInfo map. This is used to detect changes
-	files map[string]os.FileInfo
+	// File name -> FuleMapping map. This is used to detect changes
+	files map[string]fileMapping
 	// Repo name -> repoMd map.
 	repos map[string]repoMd
 	mu    sync.Mutex
@@ -64,7 +70,7 @@ func (md *pulpMetadata) scanDir(dir string) (bool, error) {
 		info, ok := md.files[f.Name()]
 		fileModified := false
 		if ok {
-			if !info.ModTime().Equal(f.ModTime()) {
+			if !info.info.ModTime().Equal(f.ModTime()) {
 				fileModified = true
 			}
 		} else {
@@ -73,7 +79,6 @@ func (md *pulpMetadata) scanDir(dir string) (bool, error) {
 		rootDir := md.fs.Mkdir(registryRoot + "repositories")
 		if fileModified {
 			changed = true
-			md.files[f.Name()] = f
 			var rmd repoMd
 			_, err := readJsonFile(path.Join(dir, f.Name()), &rmd)
 			if err == nil {
@@ -85,6 +90,7 @@ func (md *pulpMetadata) scanDir(dir string) (bool, error) {
 						rmd.RepoId = strings.Join(parts, "/")
 					}
 					md.repos[rmd.RepoId] = rmd
+					md.files[f.Name()] = fileMapping{info: f, repoId: rmd.RepoId}
 					// Remove the repo first
 					rootDir.Delete(parts[0])
 
@@ -116,6 +122,21 @@ func (md *pulpMetadata) scanDir(dir string) (bool, error) {
 	wg.Wait()
 
 	// Remove repos that no longer exist
+	for name, f := range md.files {
+		found := false
+		for _, info := range finfo {
+			if info.Name() == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			// file no longer exists
+			delete(md.repos, f.repoId)
+			delete(md.files, name)
+		}
+	}
+
 	return changed, nil
 }
 
@@ -237,7 +258,7 @@ func updateMd(dir string) {
 		fmt.Printf("UpdateMd %s\n", dir)
 		if pulpMd == nil {
 			pulpMd = &pulpMetadata{}
-			pulpMd.files = make(map[string]os.FileInfo)
+			pulpMd.files = make(map[string]fileMapping)
 			pulpMd.repos = make(map[string]repoMd)
 			pulpMd.fs = newFS()
 		}
