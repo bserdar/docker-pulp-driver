@@ -20,6 +20,13 @@ type repoMd struct {
 	Url       string `json:"url"`
 	Version   int    `json:"version"`
 	Protected bool   `json:"protected"`
+	Type      string `json:"type"`
+	// Arrays of tags and digests the image manifests reference
+	Schema2Data []string `json:"schema2_data"`
+	// Array of tags and digests that manifest lists reference
+	ManifestListData []string `json:"manifest_list_data"`
+	// Map of tag-> [digest,version]
+	Amd64Tags map[string][]interface{}
 }
 
 // Contains the file information, and the repoid described in this file
@@ -146,18 +153,27 @@ func (md *pulpMetadata) processManifest(repoId, url, tag string) {
 	manifest, _, err := httpGetContent(joinUrl(url, "manifests", tag))
 	if err == nil {
 		var manifestData map[string]interface{}
-		json.Unmarshal(manifest, &manifestData)
-		manifestDigest := digest.FromBytes(manifest)
-		// push the image
-		fsLayers := manifestData["fsLayers"].([]interface{})
-		layers := make([]digest.Digest, 0)
-		for _, layer := range fsLayers {
-			ilayer := layer.(map[string]interface{})
-			d, _ := digest.Parse(ilayer["blobSum"].(string))
-			layers = append(layers, d)
+		if err = json.Unmarshal(manifest, &manifestData); err == nil {
+			manifestDigest := digest.FromBytes(manifest)
+			// push the image
+			fsLayers, ok := manifestData["fsLayers"].([]interface{})
+			if ok {
+				layers := make([]digest.Digest, 0)
+				for _, layer := range fsLayers {
+					ilayer, ok := layer.(map[string]interface{})
+					if ok {
+						d, _ := digest.Parse(ilayer["blobSum"].(string))
+						layers = append(layers, d)
+					}
+				}
+				md.pushImage(repoId, tag, url, manifestDigest, layers)
+			} else {
+				fmt.Printf("Invalid manifest %s/%s:%s\n", repoId, tag, url)
+			}
+		} else {
+			fmt.Printf("Cannot parse manifest: %s\n", err.Error())
 		}
 
-		md.pushImage(repoId, tag, url, manifestDigest, layers)
 	} else {
 		fmt.Printf("Cannot retrieve %s\n", joinUrl(url, "manifests", tag))
 	}
