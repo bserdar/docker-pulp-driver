@@ -1,0 +1,18 @@
+{
+    "schema2_data": ["sha256:89844b362dbb892763f52db0a9af6eab8fc995a8ff0f18b50cacce4a56adaba5"],
+    "repo-registry-id": "dmage",
+    "version": 4,
+    "repository": "dmage",
+    "url": "https://dhcp131-12.brq.redhat.com/pulp/docker/v2/dmage/",
+    "manifest_list_amd64_tags": {
+        "hello": ["sha256:89844b362dbb892763f52db0a9af6eab8fc995a8ff0f18b50cacce4a56adaba5", 1],
+        "latest": ["sha256:89844b362dbb892763f52db0a9af6eab8fc995a8ff0f18b50cacce4a56adaba5", 1]},
+    "protected": false,
+    "type": "pulp-docker-redirect",
+    "manifest_list_data": ["sha256:4bac2acdac51b5fb3a015c00ceb42f10bdf966d04324473a95d3c5f4e8b03e7d",
+                           "sha256:c5b93ca4ba033c2aebad7ea21ba1e56da8e6f7147edb99bb63f34908022457ad",
+                           "fake-arm-only",
+                           "sha256:a01b2fce8c44ccf0350cb7c8016e6923d861e6f5f97d5661bfc522f5460a9f7c",
+                           "hello",
+                           "latest"]
+}
