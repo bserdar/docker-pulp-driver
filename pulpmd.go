@@ -89,39 +89,22 @@ func (md *pulpMetadata) scanDir(dir string) (bool, error) {
 			var rmd repoMd
 			_, err := readJsonFile(path.Join(dir, f.Name()), &rmd)
 			if err == nil {
+				parts := strings.Split(rmd.RepoId, "/")
+				if parts[0] == "library" {
+					parts = parts[1:]
+					rmd.RepoId = strings.Join(parts, "/")
+				}
+				// Remove the repo first
+				rootDir.Delete(parts[0])
+				fmt.Printf("Loading %s\n", f.Name())
 				if rmd.Version == 2 {
-					fmt.Printf("Loading %s\n", f.Name())
-					parts := strings.Split(rmd.RepoId, "/")
-					if parts[0] == "library" {
-						parts = parts[1:]
-						rmd.RepoId = strings.Join(parts, "/")
-					}
 					md.repos[rmd.RepoId] = rmd
 					md.files[f.Name()] = fileMapping{info: f, repoId: rmd.RepoId}
-					// Remove the repo first
-					rootDir.Delete(parts[0])
-
-					// Get image data
-
-					// Get tags
-					tags, _, err := httpGetContent(joinUrl(rmd.Url, "tags", "list"))
-					if err == nil {
-						var tagData map[string]interface{}
-						if json.Unmarshal(tags, &tagData) == nil {
-							itags, ok := tagData["tags"]
-							if ok {
-								for _, tag := range itags.([]interface{}) {
-									stag := tag.(string)
-									fmt.Printf("%s:%s\n", rmd.RepoId, tag)
-									wg.Add(1)
-									go func() {
-										defer wg.Done()
-										md.processManifest(rmd.RepoId, rmd.Url, stag)
-									}()
-								}
-							}
-						}
-					}
+					md.processV2Data(&wg, &rmd)
+				} else if rmd.Version == 4 {
+					md.repos[rmd.RepoId] = rmd
+					md.files[f.Name()] = fileMapping{info: f, repoId: rmd.RepoId}
+					md.processV2Data(&wg, &rmd)
 				}
 			}
 		}
@@ -145,6 +128,31 @@ func (md *pulpMetadata) scanDir(dir string) (bool, error) {
 	}
 
 	return changed, nil
+}
+
+func (md *pulpMetadata) processV2Data(wg *sync.WaitGroup, rmd *repoMd) {
+	// Get image data
+	// Get tags
+	tags, _, err := httpGetContent(joinUrl(rmd.Url, "tags", "list"))
+	if err == nil {
+		var tagData map[string]interface{}
+		if json.Unmarshal(tags, &tagData) == nil {
+			itags, ok := tagData["tags"]
+			if ok {
+				for _, tag := range itags.([]interface{}) {
+					stag := tag.(string)
+					fmt.Printf("%s:%s\n", rmd.RepoId, tag)
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						md.processManifest(rmd.RepoId, rmd.Url, stag)
+					}()
+				}
+			}
+		}
+	} else {
+		fmt.Printf("Cannot read %s: %s\n", rmd.RepoId, err.Error())
+	}
 }
 
 func (md *pulpMetadata) processManifest(repoId, url, tag string) {
