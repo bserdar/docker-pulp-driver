@@ -2,6 +2,7 @@ package pulp
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -12,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/docker/distribution/context"
+	rctx "github.com/docker/distribution/context"
 	storagedriver "github.com/docker/distribution/registry/storage/driver"
 	"github.com/docker/distribution/registry/storage/driver/base"
 	"github.com/docker/distribution/registry/storage/driver/factory"
@@ -164,7 +165,7 @@ func NewReaderCloser(s string) StrReaderCloser {
 
 // GetContent retrieves the content stored at "path" as a []byte.
 func (d *driver) GetContent(ctx context.Context, path string) ([]byte, error) {
-	context.GetLogger(ctx).Debugf("getContent: path:%s", path)
+	rctx.GetLogger(ctx).Debugf("getContent: path:%s", path)
 	rc, err := d.Reader(ctx, path, 0)
 	if err != nil {
 		return nil, err
@@ -187,7 +188,7 @@ func (d *driver) PutContent(ctx context.Context, subPath string, contents []byte
 // Reader retrieves an io.ReadCloser for the content stored at "path" with a
 // given byte offset.
 func (d *driver) Reader(ctx context.Context, path string, offset int64) (io.ReadCloser, error) {
-	context.GetLogger(ctx).Debugf("reader: path:%s", path)
+	rctx.GetLogger(ctx).Debugf("reader: path:%s", path)
 
 	x := pulpMd.fs.Find(path)
 	if x != nil && !x.isDir() {
@@ -216,7 +217,7 @@ func (d *driver) Writer(ctx context.Context, subPath string, append bool) (stora
 // Stat retrieves the FileInfo for the given path, including the current size
 // in bytes and the creation time.
 func (d *driver) Stat(ctx context.Context, subPath string) (storagedriver.FileInfo, error) {
-	context.GetLogger(ctx).Debugf("stat: path:%s", subPath)
+	rctx.GetLogger(ctx).Debugf("stat: path:%s", subPath)
 
 	x := pulpMd.fs.Find(subPath)
 	if x != nil {
@@ -242,7 +243,7 @@ func (d *driver) Stat(ctx context.Context, subPath string) (storagedriver.FileIn
 // path.
 func (d *driver) List(ctx context.Context, subPath string) ([]string, error) {
 	fullPath := subPath
-	context.GetLogger(ctx).Debugf("list: path: %s, fullPath: %s\n", subPath, fullPath)
+	rctx.GetLogger(ctx).Debugf("list: path: %s, fullPath: %s\n", subPath, fullPath)
 	x := pulpMd.fs.Find(fullPath)
 
 	if x != nil && x.isDir() {
@@ -269,7 +270,7 @@ func (d *driver) Delete(ctx context.Context, subPath string) error {
 // URLFor returns a URL which may be used to retrieve the content stored at the given path.
 // May return an UnsupportedMethodErr in certain StorageDriver implementations.
 func (d *driver) URLFor(ctx context.Context, path string, options map[string]interface{}) (string, error) {
-	context.GetLogger(ctx).Debugf("URLFor :%s", path)
+	rctx.GetLogger(ctx).Debugf("URLFor :%s", path)
 	x := pulpMd.fs.Find(path)
 	if x != nil {
 		if !x.isDir() {
