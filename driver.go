@@ -31,6 +31,10 @@ const (
 	// parameter. If the driver's parameters are less than this we set
 	// the parameters to minThreads
 	minThreads = uint64(25)
+
+	ManifestV1   = "application/vnd.docker.distribution.manifest.v1+json"
+	ManifestV2   = "application/vnd.docker.distribution.manifest.v2+json"
+	ManifestList = "application/vnd.docker.distribution.manifest.list.v2+json"
 )
 
 // DriverParameters represents all configuration options available for the

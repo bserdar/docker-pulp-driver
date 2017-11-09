@@ -222,17 +222,24 @@ func (md *pulpMetadata) pushManifestList(repoId, url, tag string,
 	manifestData map[string]interface{}) {
 	manifests, ok := manifestData["manifests"]
 	if ok {
+		// push manifest list data
+		md.pushRevision(repoId, tag, manifestDigest)
+		md.pushTag(repoId, tag, manifestDigest)
+		md.pushManifestBlob(tag, url, manifestDigest)
+
 		if manifestArr, ok := manifests.([]interface{}); ok {
 			for _, iplatformManifest := range manifestArr {
 				if platformManifest, ok := iplatformManifest.(map[string]interface{}); ok {
 					idigest, ok := platformManifest["digest"]
 					if ok {
-						if mediaType, ok := getStr(platformManifest, "mediaType"); ok {
+						if _, ok := getStr(platformManifest, "mediaType"); ok {
 							dg, _ := digest.Parse(fmt.Sprint(idigest))
-							if mediaType == "application/vnd.docker.image.manifest.v2+json" {
-								// v2 manifest
+							manifestData, _, err := httpGetContent(joinUrl(url, "blobs", dg.Algorithm().String(),
+								dg.Hex()[0:2], dg.Hex()))
+							if err != nil {
+								md.processManifestData(repoId, url, tag, manifestData)
 							} else {
-								// v1 manifest
+								fmt.Printf("Cannot read manifest for %s", dg)
 							}
 						}
 					}
@@ -249,37 +256,40 @@ func (md *pulpMetadata) processManifest(repoId, url, tag string) {
 	fmt.Printf("retrieving %s\n", joinUrl(url, "manifests", tag))
 	manifest, _, err := httpGetContent(joinUrl(url, "manifests", tag))
 	if err == nil {
-		var manifestData map[string]interface{}
-		if err = json.Unmarshal(manifest, &manifestData); err == nil {
-			manifestDigest := digest.FromBytes(manifest)
-			schemaVersion, ok := getInt(manifestData, "schemaVersion")
-			if !ok {
-				fmt.Printf("Cannot get schema version from manifest: %v", manifestData)
-			}
-			switch schemaVersion {
-			case 1:
-				// push the image
-				md.pushV1ManifestData(repoId, url, tag, manifestDigest, manifestData)
-
-			case 2:
-				if mediaType, ok := getStr(manifestData, "mediaType"); ok {
-					if mediaType == "application/vnd.docker.distribution.manifest.list.v2+json" {
-						// Manifest list
-						md.pushManifestList(repoId, url, tag, manifestDigest, manifestData)
-					} else {
-						// Manifest
-						md.pushV2ManifestData(repoId, url, tag, manifestDigest, manifestData)
-					}
-				} else {
-					fmt.Printf("Cannot get mediaType %s/%s:%s\n", repoId, tag, url)
-				}
-			}
-		} else {
-			fmt.Printf("Cannot parse manifest: %s\n", err.Error())
-		}
-
+		md.processManifestData(repoId, url, tag, manifest)
 	} else {
 		fmt.Printf("Cannot retrieve %s\n", joinUrl(url, "manifests", tag))
+	}
+}
+
+func (md *pulpMetadata) processManifestData(repoId, url, tag string, manifest []byte) {
+	var manifestData map[string]interface{}
+	if err := json.Unmarshal(manifest, &manifestData); err == nil {
+		manifestDigest := digest.FromBytes(manifest)
+		schemaVersion, ok := getInt(manifestData, "schemaVersion")
+		if !ok {
+			fmt.Printf("Cannot get schema version from manifest: %v", manifestData)
+		}
+		switch schemaVersion {
+		case 1:
+			// push the image
+			md.pushV1ManifestData(repoId, url, tag, manifestDigest, manifestData)
+
+		case 2:
+			if mediaType, ok := getStr(manifestData, "mediaType"); ok {
+				if mediaType == "application/vnd.docker.distribution.manifest.list.v2+json" {
+					// Manifest list
+					md.pushManifestList(repoId, url, tag, manifestDigest, manifestData)
+				} else {
+					// Manifest
+					md.pushV2ManifestData(repoId, url, tag, manifestDigest, manifestData)
+				}
+			} else {
+				fmt.Printf("Cannot get mediaType %s/%s:%s\n", repoId, tag, url)
+			}
+		}
+	} else {
+		fmt.Printf("Cannot parse manifest: %s\n", err.Error())
 	}
 }
 
@@ -288,7 +298,10 @@ func (md *pulpMetadata) pushImage(name, tag, url string, manifestDigest digest.D
 	md.pushLayers(name, layerDigests)
 	md.pushRevision(name, tag, manifestDigest)
 	md.pushTag(name, tag, manifestDigest)
-	md.pushBlobs(tag, url, manifestDigest, layerDigests)
+	md.pushManifestBlob(tag, url, manifestDigest)
+	for _, l := range layerDigests {
+		md.pushLayerBlob(url, l)
+	}
 }
 
 func (md *pulpMetadata) pushLayers(name string, layerDigests []digest.Digest) {
@@ -326,19 +339,20 @@ func (md *pulpMetadata) pushTag(name, tag string, manifestDigest digest.Digest) 
 	datadir.Create("link", []byte(manifestDigest.String()), "")
 }
 
-func (md *pulpMetadata) pushBlobs(tag, url string, manifestDigest digest.Digest, layerDigests []digest.Digest) {
-	blobDir := md.fs.Mkdir(registryRoot + "blobs")
-	pushBlob(blobDir, manifestDigest, joinUrl(url, "manifests", tag), false)
-	for _, l := range layerDigests {
-		pushBlob(blobDir, l, joinUrl(url, "blobs", l.String()), true)
-	}
+func (md *pulpMetadata) pushManifestBlob(tag, url string, manifestDigest digest.Digest) {
+	md.pushBlob(manifestDigest, joinUrl(url, "manifests", tag), false)
 }
 
-func pushBlob(dir *mdirectory, d digest.Digest, url string, layer bool) {
+func (md *pulpMetadata) pushLayerBlob(url string, layerDigest digest.Digest) {
+	md.pushBlob(layerDigest, joinUrl(url, "blobs", layerDigest.String()), true)
+}
+
+func (md *pulpMetadata) pushBlob(d digest.Digest, url string, layer bool) {
+	dir := md.fs.Mkdir(registryRoot + "blobs")
 	alg := dir.Mkdir(d.Algorithm().String())
 	twodigs := alg.Mkdir(d.Hex()[0:2])
 	datadir := twodigs.Mkdir(d.Hex())
-	datadir.Create("data", nil, url)
+	datadir.Create("data", nil, url).isLayer = layer
 }
 
 func (md *pulpMetadata) isManifestRequest(blobPath string) (manifestReq bool, name string, tag string) {
