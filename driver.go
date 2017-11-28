@@ -11,12 +11,14 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	rctx "github.com/docker/distribution/context"
 	storagedriver "github.com/docker/distribution/registry/storage/driver"
 	"github.com/docker/distribution/registry/storage/driver/base"
 	"github.com/docker/distribution/registry/storage/driver/factory"
+	digest "github.com/opencontainers/go-digest"
 )
 
 // Copied from filesystem driver
@@ -31,10 +33,12 @@ const (
 	// parameter. If the driver's parameters are less than this we set
 	// the parameters to minThreads
 	minThreads = uint64(25)
+)
 
-	ManifestV1   = "application/vnd.docker.distribution.manifest.v1+json"
-	ManifestV2   = "application/vnd.docker.distribution.manifest.v2+json"
-	ManifestList = "application/vnd.docker.distribution.manifest.list.v2+json"
+var (
+	metadata    = pulpMetadata{files: map[string]fileMapping{}, repos: map[string]*repository{}}
+	updateMx    sync.Mutex
+	defaultTime = time.Now()
 )
 
 // DriverParameters represents all configuration options available for the
@@ -60,6 +64,25 @@ func (factory *pulpDriverFactory) Create(parameters map[string]interface{}) (sto
 	updateMd(params.PollingDir)
 	startDirWatch(params.PollingDir, params.PollingIntervalSecs)
 	return New(*params), nil
+}
+
+func updateMd(dir string) {
+	updateMx.Lock()
+	defer updateMx.Unlock()
+	fmt.Printf("UpdateMd %s\n", dir)
+	changed, _ := metadata.scanDir(dir)
+	if changed {
+		fmt.Printf("%s\n", metadata.repos)
+	}
+}
+
+func startDirWatch(dir string, pollingIntervalSecs uint64) {
+	tkr := time.NewTicker(time.Duration(pollingIntervalSecs) * time.Second)
+	go func() {
+		for _ = range tkr.C {
+			updateMd(dir)
+		}
+	}()
 }
 
 type driver struct {
@@ -193,22 +216,70 @@ func (d *driver) PutContent(ctx context.Context, subPath string, contents []byte
 // given byte offset.
 func (d *driver) Reader(ctx context.Context, path string, offset int64) (io.ReadCloser, error) {
 	rctx.GetLogger(ctx).Debugf("reader: path:%s", path)
+	// Get the significant parts of the path
+	components := getPathComponents(path)
+	if len(components) > 0 {
+		if components[0] == "blobs" {
+			if len(components) > 4 {
+				metadata.RLock()
+				defer metadata.RUnlock()
 
-	x := pulpMd.fs.Find(path)
-	if x != nil && !x.isDir() {
-		file := x.(*mfile)
-		if file.isRedirect {
-			if file.isLayer {
-				panic("Cannot read layer")
-			} else {
-				data, _, err := httpGetContent(file.redirectUrl)
-				if err != nil {
-					return nil, err
+				dg := digest.NewDigestFromHex(components[1], components[3])
+				repo, tag, isLayer := metadata.FindByDigest(dg)
+				if repo != nil {
+					if isLayer {
+						return nil, fmt.Errorf("Cannot read layer")
+					}
+					tagdata, ok := repo.Tags[tag]
+					if ok {
+						// Read the manifest
+					}
 				}
-				return NewReaderCloser(string(data)), nil
 			}
-		} else {
-			return NewReaderCloser(string(file.contents)), nil
+		} else if components[0] == "repositories" {
+			// components 1 and possibly 2 have the name, then _manifests or _layers
+			var name string
+			for i, c := range components {
+				if c == "_manifests" || c == "_layers" {
+					name = strings.Join(components[1:i], "/")
+					components = components[i:]
+					break
+				}
+			}
+			if len(name) > 0 && len(components) > 1 {
+				repo := metadata.FindRepoByName(name)
+				if repo != nil {
+					if components[0] == "_manifests" {
+						if len(components) > 1 {
+							if components[1] == "_revisions" {
+								if len(components) > 4 {
+									return NewReaderCloser(string(digest.NewDigestFromHex(components[2], components[4]))), nil
+								}
+							} else if components[1] == "_tags" {
+								if len(components) > 2 {
+									tag := components[2]
+									tagdata, ok := repo.Tags[tag]
+									if ok {
+										components = components[2:]
+										if len(components) > 0 {
+											if components[0] == "current" {
+												return NewReaderCloser(tagdata.ManifestLink()), nil
+											} else if components[0] == "index" {
+												return NewReaderCloser(tagdata.ManifestLink()), nil
+											}
+										}
+									}
+								}
+							}
+						}
+					} else if components[0] == "_layers" {
+						if len(components) > 3 {
+							// Return the digest as file contents
+							return NewReaderCloser(string(digest.NewDigestFromHex(components[1], components[2]))), nil
+						}
+					}
+				}
+			}
 		}
 	}
 	return nil, storagedriver.PathNotFoundError{Path: path}
@@ -222,25 +293,80 @@ func (d *driver) Writer(ctx context.Context, subPath string, append bool) (stora
 // in bytes and the creation time.
 func (d *driver) Stat(ctx context.Context, subPath string) (storagedriver.FileInfo, error) {
 	rctx.GetLogger(ctx).Debugf("stat: path:%s", subPath)
-
-	x := pulpMd.fs.Find(subPath)
-	if x != nil {
-		if !x.isDir() {
-			file := x.(*mfile)
-			if file.isRedirect {
-				return getBlobHeader(ctx, subPath, file.redirectUrl)
+	ret := storagedriver.FileInfoInternal{}
+	ret.FileInfoFields.Path = subPath
+	ret.FileInfoFields.ModTime = defaultTime
+	ret.FileInfoFields.IsDir = true
+	// We set size and dir flags
+	components := getPathComponents(subPath)
+	if len(components) > 0 {
+		if components[0] == "blobs" {
+			if len(components) > 4 {
+				metadata.RLock()
+				defer metadata.RUnlock()
+				dg := digest.NewDigestFromHex(components[1], components[3])
+				repo, tag, isLayer := metadata.FindByDigest(dg)
+				if repo != nil {
+					if isLayer {
+						// Get layer info
+						//return getBlobHeader(ctx, subPath, file.redirectUrl)
+					}
+					tagdata, ok := repo.Tags[tag]
+					if ok {
+						// Get the manifest info
+					}
+				}
+			}
+		} else if components[0] == "repositories" {
+			// components 1 and possibly 2 have the name, then _manifests or _layers
+			var name string
+			for i, c := range components {
+				if c == "_manifests" || c == "_layers" {
+					name = strings.Join(components[1:i], "/")
+					components = components[i:]
+					break
+				}
+			}
+			if len(name) > 0 && len(components) > 1 {
+				repo := metadata.FindRepoByName(name)
+				if repo != nil {
+					if components[0] == "_manifests" {
+						if len(components) > 1 {
+							if components[1] == "_revisions" {
+								if len(components) > 4 {
+									ret.FileInfoFields.IsDir = false
+									ret.FileInfoFields.Size = 71
+								}
+							} else if components[1] == "_tags" {
+								if len(components) > 2 {
+									tag := components[2]
+									tagdata, ok := repo.Tags[tag]
+									if ok {
+										components = components[2:]
+										if len(components) > 0 {
+											if components[0] == "current" {
+												ret.FileInfoFields.IsDir = false
+												ret.FileInfoFields.Size = 71
+											} else if components[0] == "index" {
+												ret.FileInfoFields.IsDir = false
+												ret.FileInfoFields.Size = 71
+											}
+										}
+									}
+								}
+							}
+						}
+					} else if components[0] == "_layers" {
+						if len(components) > 3 {
+							ret.FileInfoFields.IsDir = false
+							ret.FileInfoFields.Size = 71
+						}
+					}
+				}
 			}
 		}
-		ret := storagedriver.FileInfoInternal{}
-		ret.FileInfoFields.Path = subPath
-		ret.FileInfoFields.IsDir = x.isDir()
-		if !x.isDir() {
-			ret.FileInfoFields.Size = x.(*mfile).size
-		}
-		ret.FileInfoFields.ModTime = x.getModTime()
-		return ret, nil
 	}
-	return nil, storagedriver.PathNotFoundError{Path: subPath}
+	return ret, nil
 }
 
 // List returns a list of the objects that are direct descendants of the given
@@ -248,16 +374,32 @@ func (d *driver) Stat(ctx context.Context, subPath string) (storagedriver.FileIn
 func (d *driver) List(ctx context.Context, subPath string) ([]string, error) {
 	fullPath := subPath
 	rctx.GetLogger(ctx).Debugf("list: path: %s, fullPath: %s\n", subPath, fullPath)
-	x := pulpMd.fs.Find(fullPath)
-
-	if x != nil && x.isDir() {
-		ret := make([]string, 0)
-		for _, node := range x.(*mdirectory).nodes {
-			ret = append(ret, path.Join(subPath, node.getName()))
+	ret := make([]string, 0)
+	// Implement list only for tags
+	components := getPathComponents(subPath)
+	if len(components) > 4 {
+		if components[0] == "repositories" {
+			var name string
+			for i, c := range components {
+				if c == "_manifests" || c == "_layers" {
+					name = strings.Join(components[1:i], "/")
+					components = components[i:]
+					break
+				}
+			}
+			if len(name) > 0 && len(components) == 2 {
+				repo := metadata.FindRepoByName(name)
+				if repo != nil {
+					if components[0] == "_manifests" && components[1] == "_tags" {
+						for t, _ := range repo.Tags {
+							ret = append(ret, path.Join(subPath, t))
+						}
+					}
+				}
+			}
 		}
-		return ret, nil
 	}
-	return nil, storagedriver.PathNotFoundError{Path: subPath}
+	return ret, nil
 }
 
 // Move moves an object stored at sourcePath to destPath, removing the original
@@ -275,12 +417,24 @@ func (d *driver) Delete(ctx context.Context, subPath string) error {
 // May return an UnsupportedMethodErr in certain StorageDriver implementations.
 func (d *driver) URLFor(ctx context.Context, path string, options map[string]interface{}) (string, error) {
 	rctx.GetLogger(ctx).Debugf("URLFor :%s", path)
-	x := pulpMd.fs.Find(path)
-	if x != nil {
-		if !x.isDir() {
-			file := x.(*mfile)
-			if file.isRedirect {
-				return file.redirectUrl, nil
+	components := getPathComponents(path)
+	if len(components) > 0 {
+		if components[0] == "blobs" {
+			if len(components) > 4 {
+				metadata.RLock()
+				defer metadata.RUnlock()
+
+				dg := digest.NewDigestFromHex(components[1], components[3])
+				repo, tag, isLayer := metadata.FindByDigest(dg)
+				if repo != nil {
+					if isLayer {
+						// fwd
+					}
+					tagdata, ok := repo.Tags[tag]
+					if ok {
+						// fwd
+					}
+				}
 			}
 		}
 	}
@@ -371,4 +525,15 @@ func httpGetContent(url string) ([]byte, *http.Response, error) {
 		return nil, nil, err
 	}
 	return p, resp, nil
+}
+
+func getPathComponents(p string) []string {
+	parts := strings.Split(p, "/")
+	if len(parts) > 0 && len(parts[0]) == 0 {
+		parts = parts[1:]
+	}
+	if len(parts) > 3 && parts[0] == "docker" && parts[1] == "registry" && parts[2] == "v2" {
+		parts = parts[3:]
+	}
+	return parts
 }
