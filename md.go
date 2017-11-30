@@ -1,6 +1,7 @@
 package pulp
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	rctx "github.com/docker/distribution/context"
 	digest "github.com/opencontainers/go-digest"
 )
 
@@ -47,15 +49,34 @@ type tagData struct {
 	Digests map[string]string
 }
 
-func (t *tagData) ManifestLink() string {
-	for dg, t := range t.Digests {
-		if t == ManifestListMediaType {
-			return dg
+// accepts returns true if request has Accept header for the given media type
+func accepts(ctx context.Context, mediaType string) bool {
+	req, _ := rctx.GetRequest(ctx)
+	if req != nil {
+		if hdr, ok := req.Header["Accept"]; ok {
+			for _, s := range hdr {
+				if s == mediaType {
+					return true
+				}
+			}
 		}
 	}
-	for dg, t := range t.Digests {
-		if t == ManifestV2MediaType {
-			return dg
+	return false
+}
+
+func (t *tagData) ManifestLink(ctx context.Context) string {
+	if accepts(ctx, ManifestListMediaType) {
+		for dg, t := range t.Digests {
+			if t == ManifestListMediaType {
+				return dg
+			}
+		}
+	}
+	if accepts(ctx, ManifestV2MediaType) {
+		for dg, t := range t.Digests {
+			if t == ManifestV2MediaType {
+				return dg
+			}
 		}
 	}
 	for dg, t := range t.Digests {

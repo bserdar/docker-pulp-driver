@@ -233,6 +233,11 @@ func (d *driver) Reader(ctx context.Context, path string, offset int64) (io.Read
 					tagdata, ok := repo.Tags[tag]
 					if ok {
 						// Read the manifest
+						data, _, err := httpGetContent(joinUrl(repo.RepoMd.Url, "blobs", dg.String()))
+						if err != nil {
+							return nil, err
+						}
+						return NewReaderCloser(data), nil
 					}
 				}
 			}
@@ -263,9 +268,9 @@ func (d *driver) Reader(ctx context.Context, path string, offset int64) (io.Read
 										components = components[2:]
 										if len(components) > 0 {
 											if components[0] == "current" {
-												return NewReaderCloser(tagdata.ManifestLink()), nil
+												return NewReaderCloser(tagdata.ManifestLink(ctx)), nil
 											} else if components[0] == "index" {
-												return NewReaderCloser(tagdata.ManifestLink()), nil
+												return NewReaderCloser(tagdata.ManifestLink(ctx)), nil
 											}
 										}
 									}
@@ -309,11 +314,12 @@ func (d *driver) Stat(ctx context.Context, subPath string) (storagedriver.FileIn
 				if repo != nil {
 					if isLayer {
 						// Get layer info
-						//return getBlobHeader(ctx, subPath, file.redirectUrl)
+						return getBlobHeader(ctx, subPath, joinUrl(repo.RepoMd.Url, "blobs", dg.String())), nil
 					}
 					tagdata, ok := repo.Tags[tag]
 					if ok {
 						// Get the manifest info
+						return getBlobHeader(ctx, subPath, joinUrl(repo.RepoMd.Url, "blobs", dg.String())), nil
 					}
 				}
 			}
