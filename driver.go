@@ -230,14 +230,14 @@ func (d *driver) Reader(ctx context.Context, path string, offset int64) (io.Read
 					if isLayer {
 						return nil, fmt.Errorf("Cannot read layer")
 					}
-					tagdata, ok := repo.Tags[tag]
+					_, ok := repo.Tags[tag]
 					if ok {
 						// Read the manifest
 						data, _, err := httpGetContent(joinUrl(repo.RepoMd.Url, "blobs", dg.String()))
 						if err != nil {
 							return nil, err
 						}
-						return NewReaderCloser(data), nil
+						return NewReaderCloser(string(data)), nil
 					}
 				}
 			}
@@ -268,9 +268,11 @@ func (d *driver) Reader(ctx context.Context, path string, offset int64) (io.Read
 										components = components[2:]
 										if len(components) > 0 {
 											if components[0] == "current" {
-												return NewReaderCloser(tagdata.ManifestLink(ctx)), nil
+												s, _ := tagdata.ManifestLink(ctx)
+												return NewReaderCloser(s), nil
 											} else if components[0] == "index" {
-												return NewReaderCloser(tagdata.ManifestLink(ctx)), nil
+												s, _ := tagdata.ManifestLink(ctx)
+												return NewReaderCloser(s), nil
 											}
 										}
 									}
@@ -314,12 +316,12 @@ func (d *driver) Stat(ctx context.Context, subPath string) (storagedriver.FileIn
 				if repo != nil {
 					if isLayer {
 						// Get layer info
-						return getBlobHeader(ctx, subPath, joinUrl(repo.RepoMd.Url, "blobs", dg.String())), nil
+						return getBlobHeader(ctx, subPath, joinUrl(repo.RepoMd.Url, "blobs", dg.String()))
 					}
-					tagdata, ok := repo.Tags[tag]
+					_, ok := repo.Tags[tag]
 					if ok {
 						// Get the manifest info
-						return getBlobHeader(ctx, subPath, joinUrl(repo.RepoMd.Url, "blobs", dg.String())), nil
+						return getBlobHeader(ctx, subPath, joinUrl(repo.RepoMd.Url, "blobs", dg.String()))
 					}
 				}
 			}
@@ -346,7 +348,7 @@ func (d *driver) Stat(ctx context.Context, subPath string) (storagedriver.FileIn
 							} else if components[1] == "_tags" {
 								if len(components) > 2 {
 									tag := components[2]
-									tagdata, ok := repo.Tags[tag]
+									_, ok := repo.Tags[tag]
 									if ok {
 										components = components[2:]
 										if len(components) > 0 {
@@ -434,11 +436,17 @@ func (d *driver) URLFor(ctx context.Context, path string, options map[string]int
 				repo, tag, isLayer := metadata.FindByDigest(dg)
 				if repo != nil {
 					if isLayer {
-						// fwd
+						return joinUrl(repo.RepoMd.Url, "blobs", dg.String()), nil
 					}
-					tagdata, ok := repo.Tags[tag]
+					_, ok := repo.Tags[tag]
 					if ok {
-						// fwd
+						_, mediaType := repo.Tags[tag].ManifestLink(ctx)
+						if mediaType == ManifestListMediaType {
+							return joinUrl(repo.RepoMd.Url, "manifests", "list", tag), nil
+						} else if mediaType == ManifestV2MediaType {
+							return joinUrl(repo.RepoMd.Url, "manifests", "2", tag), nil
+						}
+						return joinUrl(repo.RepoMd.Url, "manifest", "1", tag), nil
 					}
 				}
 			}

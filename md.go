@@ -64,27 +64,28 @@ func accepts(ctx context.Context, mediaType string) bool {
 	return false
 }
 
-func (t *tagData) ManifestLink(ctx context.Context) string {
+// ManifestList determines what type of media type is accepted, and returns the digest and media type
+func (t *tagData) ManifestLink(ctx context.Context) (string, string) {
 	if accepts(ctx, ManifestListMediaType) {
 		for dg, t := range t.Digests {
 			if t == ManifestListMediaType {
-				return dg
+				return dg, t
 			}
 		}
 	}
 	if accepts(ctx, ManifestV2MediaType) {
 		for dg, t := range t.Digests {
 			if t == ManifestV2MediaType {
-				return dg
+				return dg, t
 			}
 		}
 	}
 	for dg, t := range t.Digests {
 		if t == ManifestV1MediaType {
-			return dg
+			return dg, t
 		}
 	}
-	return ""
+	return "", ""
 }
 
 func readMetadataFile(fname string) (repoMetadata, error) {
@@ -150,7 +151,7 @@ func processV4Metadata(rmd *repoMetadata) *repository {
 	repo.Name = rmd.RepoId
 	repo.Tags = make(map[string]*tagData)
 	for _, tag := range rmd.Schema2Data {
-		if dg, err := digest.Parse(tag); err != nil {
+		if _, err := digest.Parse(tag); err != nil {
 			// A tag
 			manifest, _, err := httpGetContent(joinUrl(rmd.Url, "manifests", "2", tag))
 			if err == nil {
@@ -162,7 +163,7 @@ func processV4Metadata(rmd *repoMetadata) *repository {
 		}
 	}
 	for _, tag := range rmd.ManifestListData {
-		if dg, err := digest.Parse(tag); err != nil {
+		if _, err := digest.Parse(tag); err != nil {
 			// A tag
 			manifest, _, err := httpGetContent(joinUrl(rmd.Url, "manifests", "list", tag))
 			if err == nil {
@@ -175,7 +176,7 @@ func processV4Metadata(rmd *repoMetadata) *repository {
 	}
 
 	for tag, data := range rmd.Amd64Tags {
-		digestStr := fmt.Sprint(data[0])
+		//digestStr := fmt.Sprint(data[0])
 		versionStr := fmt.Sprint(data[1])
 		manifest, _, err := httpGetContent(joinUrl(rmd.Url, "manifests", versionStr, tag))
 		if err == nil {
