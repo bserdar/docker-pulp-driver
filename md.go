@@ -44,9 +44,17 @@ type repository struct {
 	Tags   map[string]*tagData
 }
 
+func (r repository) String() string {
+	return fmt.Sprintf("Repo name=%s, tags: %v", r.Name, r.Tags)
+}
+
 type tagData struct {
 	// Map of digest -> Media type
 	Digests map[string]string
+}
+
+func (t tagData) String() string {
+	return fmt.Sprintf("Digests: %v", t.Digests)
 }
 
 // accepts returns true if request has Accept header for the given media type
@@ -85,6 +93,18 @@ func (t *tagData) ManifestLink(ctx context.Context) (string, string) {
 			return dg, t
 		}
 	}
+	// If we're here, there is no v1 schema.
+	for dg, t := range t.Digests {
+		if t == ManifestV2MediaType {
+			return dg, t
+		}
+	}
+	for dg, t := range t.Digests {
+		if t == ManifestListMediaType {
+			return dg, t
+		}
+	}
+
 	return "", ""
 }
 
@@ -148,6 +168,7 @@ func processV2Metadata(rmd *repoMetadata) *repository {
 
 func processV4Metadata(rmd *repoMetadata) *repository {
 	var repo repository
+	repo.RepoMd = rmd
 	repo.Name = rmd.RepoId
 	repo.Tags = make(map[string]*tagData)
 	for _, tag := range rmd.Schema2Data {
@@ -158,7 +179,7 @@ func processV4Metadata(rmd *repoMetadata) *repository {
 				repo.Tags[tag] = &tagData{Digests: make(map[string]string)}
 				processManifestData(manifest, tag, repo.Tags[tag])
 			} else {
-				fmt.Printf("Cannot retrieve %s\n", joinUrl(rmd.Url, "manifests", "2", tag))
+				fmt.Printf("Cannot retrieve %s: %s\n", joinUrl(rmd.Url, "manifests", "2", tag), err)
 			}
 		}
 	}
@@ -170,7 +191,7 @@ func processV4Metadata(rmd *repoMetadata) *repository {
 				repo.Tags[tag] = &tagData{Digests: make(map[string]string)}
 				processManifestData(manifest, tag, repo.Tags[tag])
 			} else {
-				fmt.Printf("Cannot retrieve %s\n", joinUrl(rmd.Url, "manifests", "list", tag))
+				fmt.Printf("Cannot retrieve %s: %s\n", joinUrl(rmd.Url, "manifests", "list", tag), err)
 			}
 		}
 	}
@@ -183,7 +204,7 @@ func processV4Metadata(rmd *repoMetadata) *repository {
 			repo.Tags[tag] = &tagData{Digests: make(map[string]string)}
 			processManifestData(manifest, tag, repo.Tags[tag])
 		} else {
-			fmt.Printf("Cannot retrieve %s\n", joinUrl(rmd.Url, "manifests", "list", tag))
+			fmt.Printf("Cannot retrieve %s: %s\n", joinUrl(rmd.Url, "manifests", "list", tag), err)
 		}
 	}
 	return &repo
@@ -250,6 +271,7 @@ func processManifestData(manifest []byte, tag string, tdata *tagData) {
 					// Manifest list
 					var list manifestList
 					if err = json.Unmarshal(manifest, &list); err == nil {
+						tdata.Digests[manifestDigest.String()] = ManifestListMediaType
 					}
 				} else {
 					// Manifest

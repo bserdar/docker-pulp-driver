@@ -103,7 +103,7 @@ type Driver struct {
 func parseParameters(parameters map[string]interface{}) (*DriverParameters, error) {
 	var (
 		maxThreads             = defaultMaxThreads
-		pollingInterval uint64 = 0
+		pollingInterval uint64 = 60
 		pollingDir             = ""
 	)
 
@@ -120,7 +120,7 @@ func parseParameters(parameters map[string]interface{}) (*DriverParameters, erro
 		}
 		pollingInterval, _ = getUintValue("pollingInterval", parameters["pollingInterval"])
 		if pollingInterval <= 0 {
-			pollingInterval = 0
+			pollingInterval = 60
 		}
 	}
 
@@ -218,6 +218,7 @@ func (d *driver) Reader(ctx context.Context, path string, offset int64) (io.Read
 	rctx.GetLogger(ctx).Debugf("reader: path:%s", path)
 	// Get the significant parts of the path
 	components := getPathComponents(path)
+	rctx.GetLogger(ctx).Debugf("components: %v", components)
 	if len(components) > 0 {
 		if components[0] == "blobs" {
 			if len(components) > 4 {
@@ -251,24 +252,29 @@ func (d *driver) Reader(ctx context.Context, path string, offset int64) (io.Read
 					break
 				}
 			}
+			rctx.GetLogger(ctx).Debugf("name: %s", name)
 			if len(name) > 0 && len(components) > 1 {
 				repo := metadata.FindRepoByName(name)
+				rctx.GetLogger(ctx).Debugf("repo: %v", repo)
 				if repo != nil {
 					if components[0] == "_manifests" {
 						if len(components) > 1 {
-							if components[1] == "_revisions" {
+							if components[1] == "revisions" {
 								if len(components) > 4 {
-									return NewReaderCloser(string(digest.NewDigestFromHex(components[2], components[4]))), nil
+									return NewReaderCloser(string(digest.NewDigestFromHex(components[2], components[3]))), nil
 								}
-							} else if components[1] == "_tags" {
+							} else if components[1] == "tags" {
 								if len(components) > 2 {
 									tag := components[2]
+									rctx.GetLogger(ctx).Debugf("Tag: %s", tag)
 									tagdata, ok := repo.Tags[tag]
 									if ok {
-										components = components[2:]
+										components = components[3:]
+										rctx.GetLogger(ctx).Debugf("Remaining components: %v", components)
 										if len(components) > 0 {
 											if components[0] == "current" {
 												s, _ := tagdata.ManifestLink(ctx)
+												rctx.GetLogger(ctx).Debugf("Return: %s", s)
 												return NewReaderCloser(s), nil
 											} else if components[0] == "index" {
 												s, _ := tagdata.ManifestLink(ctx)
@@ -309,6 +315,7 @@ func (d *driver) Stat(ctx context.Context, subPath string) (storagedriver.FileIn
 	if len(components) > 0 {
 		if components[0] == "blobs" {
 			if len(components) > 4 {
+				rctx.GetLogger(ctx).Debugf("stat: blob components:%v", components)
 				metadata.RLock()
 				defer metadata.RUnlock()
 				dg := digest.NewDigestFromHex(components[1], components[3])
@@ -340,17 +347,17 @@ func (d *driver) Stat(ctx context.Context, subPath string) (storagedriver.FileIn
 				if repo != nil {
 					if components[0] == "_manifests" {
 						if len(components) > 1 {
-							if components[1] == "_revisions" {
+							if components[1] == "revisions" {
 								if len(components) > 4 {
 									ret.FileInfoFields.IsDir = false
 									ret.FileInfoFields.Size = 71
 								}
-							} else if components[1] == "_tags" {
+							} else if components[1] == "tags" {
 								if len(components) > 2 {
 									tag := components[2]
 									_, ok := repo.Tags[tag]
 									if ok {
-										components = components[2:]
+										components = components[3:]
 										if len(components) > 0 {
 											if components[0] == "current" {
 												ret.FileInfoFields.IsDir = false
@@ -398,7 +405,7 @@ func (d *driver) List(ctx context.Context, subPath string) ([]string, error) {
 			if len(name) > 0 && len(components) == 2 {
 				repo := metadata.FindRepoByName(name)
 				if repo != nil {
-					if components[0] == "_manifests" && components[1] == "_tags" {
+					if components[0] == "_manifests" && components[1] == "tags" {
 						for t, _ := range repo.Tags {
 							ret = append(ret, path.Join(subPath, t))
 						}
